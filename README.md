@@ -16,7 +16,37 @@
 
 ## 🚀 使用方法
 
-### macOS
+### 方式一：一键远程执行（推荐）
+
+#### macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/qg-hs/upgrade_antigravity_tools/refs/heads/main/mac.sh | bash
+```
+
+#### Linux
+
+```bash
+# 用户级安装（默认）
+curl -fsSL https://raw.githubusercontent.com/qg-hs/upgrade_antigravity_tools/refs/heads/main/linux.sh | bash
+
+# 系统级安装（需要 sudo）
+curl -fsSL https://raw.githubusercontent.com/qg-hs/upgrade_antigravity_tools/refs/heads/main/linux.sh | sudo bash -s -- --system
+```
+
+#### Windows
+
+以 **管理员身份** 打开 PowerShell：
+
+```powershell
+iex(iwr -UseBasicParsing https://raw.githubusercontent.com/qg-hs/upgrade_antigravity_tools/refs/heads/main/windows.ps1)
+```
+
+---
+
+### 方式二：本地执行
+
+#### macOS
 
 ```bash
 chmod +x mac.sh
@@ -25,7 +55,7 @@ chmod +x mac.sh
 
 > 安装过程中可能需要输入管理员密码（用于移除 Gatekeeper 隔离标志）。
 
-### Linux
+#### Linux
 
 ```bash
 chmod +x linux.sh
@@ -37,9 +67,9 @@ chmod +x linux.sh
 ./linux.sh --system
 ```
 
-### Windows
+#### Windows
 
-以 **管理员身份** 打开 PowerShell，执行：
+以 **管理员身份** 打开 PowerShell：
 
 ```powershell
 # 若策略限制脚本执行，先临时放行
