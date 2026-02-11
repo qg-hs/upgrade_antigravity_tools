@@ -300,7 +300,7 @@ fi
 
 echo "${C_YELLOW}⚠️  即将${action_text}: v${INSTALLED_VER:-无} → v${LATEST_VER}${C_RESET}"
 printf "确认${action_text}? (y/N): "
-read -r ANS
+read -r ANS < /dev/tty
 case "$ANS" in
   y|Y|yes|YES) ;;
   *) 
