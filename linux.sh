@@ -15,7 +15,7 @@ readonly DESKTOP_FILE_PATH="$HOME/.local/share/applications/antigravity-tools.de
 readonly TMP_DIR="/tmp/antigravity-updater-$$"
 readonly API_LATEST="https://api.github.com/repos/${REPO}/releases/latest"
 readonly CURL_TIMEOUT=30
-readonly MIN_FREE_SPACE_MB=500
+readonly MIN_FREE_SPACE_MB=1000  # 原子替换需要双倍空间
 
 # ANSI颜色代码
 readonly C_RESET='\033[0m'
@@ -46,6 +46,45 @@ require_cmd() {
     echo "请先安装: sudo apt install ${cmd} / sudo dnf install ${cmd}"
     exit 1
   fi
+}
+
+# 校验安装完整性
+validate_installation() {
+  local install_dir="$1"
+  local bin_path="${install_dir}/${APP_BIN_NAME}"
+  
+  # 检查可执行文件存在且可执行
+  if [ ! -x "$bin_path" ]; then
+    echo -e "${C_RED}❌ 校验失败: 可执行文件不存在或无执行权限${C_RESET}"
+    return 1
+  fi
+  
+  # 验证文件类型（ELF 可执行文件或脚本）
+  if ! file "$bin_path" | grep -qE "(ELF|executable|script)"; then
+    echo -e "${C_RED}❌ 校验失败: 文件类型异常${C_RESET}"
+    return 1
+  fi
+  
+  return 0
+}
+
+# 校验 AppImage 完整性
+validate_appimage() {
+  local appimage_path="$1"
+  
+  # 检查文件存在且可执行
+  if [ ! -x "$appimage_path" ]; then
+    echo -e "${C_RED}❌ 校验失败: AppImage 不可执行${C_RESET}"
+    return 1
+  fi
+  
+  # 验证文件类型
+  if ! file "$appimage_path" | grep -qE "(ELF|executable)"; then
+    echo -e "${C_RED}❌ 校验失败: AppImage 文件类型异常${C_RESET}"
+    return 1
+  fi
+  
+  return 0
 }
 
 # 语义化版本比较(返回0表示$1 > $2)
@@ -178,8 +217,37 @@ install_appimage() {
   local target_path="${target_dir}/${APP_NAME}.AppImage"
 
   mkdir -p "$target_dir"
-  cp "$src_file" "$target_path"
-  chmod +x "$target_path"
+  
+  # 步骤1: 复制到临时位置
+  local temp_file="${target_path}.new-$$"
+  echo -e "   复制 AppImage 到临时位置..."
+  cp "$src_file" "$temp_file"
+  chmod +x "$temp_file"
+  
+  # 步骤2: 校验完整性
+  echo -e "   校验 AppImage 完整性..."
+  if ! validate_appimage "$temp_file"; then
+    echo -e "${C_RED}❌ AppImage 完整性校验失败${C_RESET}"
+    rm -f "$temp_file"
+    exit 1
+  fi
+  echo -e "${C_GREEN}   ✓ 完整性校验通过${C_RESET}"
+  
+  # 步骤3: 原子替换
+  local backup_file="${target_path}.backup-$$"
+  if [ -f "$target_path" ]; then
+    mv "$target_path" "$backup_file"
+  fi
+  
+  if ! mv "$temp_file" "$target_path"; then
+    echo -e "${C_RED}❌ 安装失败，恢复旧版本...${C_RESET}"
+    [ -f "$backup_file" ] && mv "$backup_file" "$target_path"
+    rm -f "$temp_file" 2>/dev/null || true
+    exit 1
+  fi
+  
+  # 清理备份
+  rm -f "$backup_file" 2>/dev/null || true
 
   # 创建符号链接到 PATH
   if [ "$INSTALL_MODE" = "system" ]; then
@@ -250,20 +318,80 @@ install_tarball() {
   local source_dir
   source_dir=$(dirname "$found_exe")
 
-  # 安装文件
+  # 步骤1: 复制到临时位置
+  local temp_dir="${target_dir}.new-$$"
+  echo -e "   复制文件到临时位置..."
+  
   if [ "$INSTALL_MODE" = "system" ]; then
-    sudo rm -rf "$target_dir"
-    sudo mkdir -p "$target_dir"
-    sudo cp -R "$source_dir"/* "$target_dir"/
-    sudo chmod +x "${target_dir}/${APP_BIN_NAME}" 2>/dev/null || true
-    sudo ln -sf "${target_dir}/${APP_BIN_NAME}" "/usr/local/bin/${APP_BIN_NAME}"
+    sudo mkdir -p "$temp_dir"
+    sudo cp -R "$source_dir"/* "$temp_dir"/
+    sudo chmod +x "${temp_dir}/${APP_BIN_NAME}" 2>/dev/null || true
   else
-    rm -rf "$target_dir"
-    mkdir -p "$target_dir"
-    cp -R "$source_dir"/* "$target_dir"/
-    chmod +x "${target_dir}/${APP_BIN_NAME}" 2>/dev/null || true
+    mkdir -p "$temp_dir"
+    cp -R "$source_dir"/* "$temp_dir"/
+    chmod +x "${temp_dir}/${APP_BIN_NAME}" 2>/dev/null || true
+  fi
+  
+  # 步骤2: 校验完整性
+  echo -e "   校验安装完整性..."
+  if ! validate_installation "$temp_dir"; then
+    echo -e "${C_RED}❌ 安装完整性校验失败${C_RESET}"
+    if [ "$INSTALL_MODE" = "system" ]; then
+      sudo rm -rf "$temp_dir"
+    else
+      rm -rf "$temp_dir"
+    fi
+    exit 1
+  fi
+  echo -e "${C_GREEN}   ✓ 完整性校验通过${C_RESET}"
+  
+  # 步骤3: 原子替换
+  local backup_dir="${target_dir}.backup-$$"
+  
+  if [ "$INSTALL_MODE" = "system" ]; then
+    # 系统级安装
+    if [ -d "$target_dir" ]; then
+      echo -e "   备份旧版本..."
+      sudo mv "$target_dir" "$backup_dir" || {
+        echo -e "${C_RED}❌ 无法创建备份${C_RESET}"
+        sudo rm -rf "$temp_dir"
+        exit 1
+      }
+    fi
+    
+    echo -e "   安装新版本..."
+    if ! sudo mv "$temp_dir" "$target_dir"; then
+      echo -e "${C_RED}❌ 安装失败，恢复旧版本...${C_RESET}"
+      [ -d "$backup_dir" ] && sudo mv "$backup_dir" "$target_dir"
+      sudo rm -rf "$temp_dir" 2>/dev/null || true
+      exit 1
+    fi
+    
+    sudo ln -sf "${target_dir}/${APP_BIN_NAME}" "/usr/local/bin/${APP_BIN_NAME}"
+    [ -d "$backup_dir" ] && sudo rm -rf "$backup_dir"
+    
+  else
+    # 用户级安装
+    if [ -d "$target_dir" ]; then
+      echo -e "   备份旧版本..."
+      mv "$target_dir" "$backup_dir" || {
+        echo -e "${C_RED}❌ 无法创建备份${C_RESET}"
+        rm -rf "$temp_dir"
+        exit 1
+      }
+    fi
+    
+    echo -e "   安装新版本..."
+    if ! mv "$temp_dir" "$target_dir"; then
+      echo -e "${C_RED}❌ 安装失败，恢复旧版本...${C_RESET}"
+      [ -d "$backup_dir" ] && mv "$backup_dir" "$target_dir"
+      rm -rf "$temp_dir" 2>/dev/null || true
+      exit 1
+    fi
+    
     mkdir -p "$HOME/.local/bin"
     ln -sf "${target_dir}/${APP_BIN_NAME}" "$HOME/.local/bin/${APP_BIN_NAME}"
+    [ -d "$backup_dir" ] && rm -rf "$backup_dir"
   fi
 
   echo -e "${C_GREEN}✅ 已安装至: ${target_dir}${C_RESET}"

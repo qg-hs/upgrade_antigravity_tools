@@ -12,7 +12,7 @@ readonly DEFAULT_APP_PATH="/Applications/${APP_NAME}.app"
 readonly TMP_DIR="/tmp/antigravity-updater-$$"
 readonly API_LATEST="https://api.github.com/repos/${REPO}/releases/latest"
 readonly CURL_TIMEOUT=30
-readonly MIN_FREE_SPACE_MB=500
+readonly MIN_FREE_SPACE_MB=1000  # 原子替换需要双倍空间
 
 # ANSI颜色代码
 readonly C_RESET='\033[0m'
@@ -63,6 +63,40 @@ find_installed_app() {
   fi
 
   echo ""
+}
+
+# 校验应用完整性
+validate_app() {
+  local app_path="$1"
+  
+  # 检查基本目录结构
+  if [ ! -d "${app_path}/Contents" ]; then
+    echo "${C_RED}❌ 校验失败: 缺少 Contents 目录${C_RESET}"
+    return 1
+  fi
+  
+  if [ ! -f "${app_path}/Contents/Info.plist" ]; then
+    echo "${C_RED}❌ 校验失败: 缺少 Info.plist${C_RESET}"
+    return 1
+  fi
+  
+  # 验证 Info.plist 可读性
+  if ! /usr/bin/defaults read "${app_path}/Contents/Info" CFBundleShortVersionString >/dev/null 2>&1; then
+    echo "${C_RED}❌ 校验失败: Info.plist 损坏或不可读${C_RESET}"
+    return 1
+  fi
+  
+  # 检查可执行文件
+  local exec_name="$(/usr/bin/defaults read "${app_path}/Contents/Info" CFBundleExecutable 2>/dev/null || echo "")"
+  if [ -n "$exec_name" ]; then
+    local exec_path="${app_path}/Contents/MacOS/${exec_name}"
+    if [ ! -x "$exec_path" ]; then
+      echo "${C_RED}❌ 校验失败: 可执行文件不存在或无执行权限${C_RESET}"
+      return 1
+    fi
+  fi
+  
+  return 0
 }
 
 # 检查磁盘空间(至少500MB可用)
@@ -144,20 +178,59 @@ install_from_dir() {
     exit 1
   fi
 
-  echo "${C_GREEN}📁 安装至 /Applications...${C_RESET}"
+  echo "${C_GREEN}📁 准备安装至 /Applications...${C_RESET}"
   
-  # 删除旧版本
-  if [ -d "$DEFAULT_APP_PATH" ]; then
-    rm -rf "$DEFAULT_APP_PATH"
+  # 步骤1: 复制到临时位置
+  local temp_app="${DEFAULT_APP_PATH}.new-$$"
+  echo "   复制应用到临时位置..."
+  if ! cp -R "$found_app" "$temp_app"; then
+    echo "${C_RED}❌ 复制失败，可能磁盘空间不足${C_RESET}"
+    rm -rf "$temp_app" 2>/dev/null || true
+    exit 1
   fi
-
   
-  cp -R "$found_app" /Applications/
-
+  # 步骤2: 校验完整性
+  echo "   校验应用完整性..."
+  if ! validate_app "$temp_app"; then
+    echo "${C_RED}❌ 应用完整性校验失败，中止安装${C_RESET}"
+    rm -rf "$temp_app"
+    exit 1
+  fi
+  echo "${C_GREEN}   ✓ 完整性校验通过${C_RESET}"
+  
+  # 步骤3: 原子替换
+  local backup_path="${DEFAULT_APP_PATH}.backup-$$"
+  if [ -d "$DEFAULT_APP_PATH" ]; then
+    echo "   备份旧版本..."
+    if ! mv "$DEFAULT_APP_PATH" "$backup_path"; then
+      echo "${C_RED}❌ 无法创建备份，中止安装${C_RESET}"
+      rm -rf "$temp_app"
+      exit 1
+    fi
+  fi
+  
+  echo "   安装新版本..."
+  if ! mv "$temp_app" "$DEFAULT_APP_PATH"; then
+    echo "${C_RED}❌ 安装失败，恢复旧版本...${C_RESET}"
+    if [ -d "$backup_path" ]; then
+      mv "$backup_path" "$DEFAULT_APP_PATH"
+      echo "${C_YELLOW}⚠️  已恢复旧版本${C_RESET}"
+    fi
+    rm -rf "$temp_app" 2>/dev/null || true
+    exit 1
+  fi
+  
+  # 步骤4: 移除隔离标志
   echo "${C_GREEN}🔐 移除隔离标志(可能需要管理员密码)...${C_RESET}"
   sudo xattr -rd com.apple.quarantine "$DEFAULT_APP_PATH" >/dev/null 2>&1 || {
     echo "${C_YELLOW}⚠️  移除隔离失败，首次打开可能需手动允许${C_RESET}"
   }
+  
+  # 步骤5: 清理备份
+  if [ -d "$backup_path" ]; then
+    echo "   清理备份..."
+    rm -rf "$backup_path"
+  fi
 
   local final_ver="$(read_installed_version "$DEFAULT_APP_PATH")"
   echo ""
