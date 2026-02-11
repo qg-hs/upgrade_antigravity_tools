@@ -109,10 +109,18 @@ show_release_notes() {
   echo "${C_CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
   
   # 提取发布说明(body字段，可能包含换行符)
-  local release_body=$(echo "$json" | sed -n 's/.*"body"[[:space:]]*:[[:space:]]*"\(.*\)","created_at".*/\1/p' | sed 's/\\n/\n/g' | sed 's/\\r//g')
-  
+  local release_body=""
+  # macOS 原生 plutil 可靠提取 JSON 字段
+  if command -v plutil >/dev/null; then
+    release_body=$(echo "$json" | plutil -extract "body" raw - 2>/dev/null || echo "")
+  fi
+  # plutil 失败时回退到 sed（body 是 JSON 最后一个字段，匹配到末尾 "} ）
+  if [ -z "$release_body" ]; then
+    release_body=$(echo "$json" | sed -n 's/.*"body"[[:space:]]*:[[:space:]]*"\(.*\)"[[:space:]]*}$/\1/p' | sed 's/\\n/\n/g' | sed 's/\\r//g')
+  fi
+
   if [ -n "$release_body" ]; then
-    echo "$release_body" | head -20  # 限制最多20行，避免过长
+    echo "$release_body" | head -20
     echo ""
   else
     echo "未找到更新说明，访问完整发布页:"
